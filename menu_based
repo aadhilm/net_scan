@@ -1,0 +1,182 @@
+#!/bin/bash
+
+# Define default ports to scan
+ports=(21 22 80 443) # Default ports to scan
+
+# Initialize an associative array to hold active devices and their open ports
+declare -A active_devices
+
+# Function to handle exit signal
+cleanup() {
+    echo -e "\nScan interrupted. Exiting..."
+    exit 1
+}
+
+# Set trap for SIGINT (Ctrl+C)
+trap cleanup SIGINT
+
+# Function to get and display network information
+display_network_info() {
+    echo "Gathering network information..."
+    
+    # Get interface name and Wi-Fi name (SSID) if connected to Wi-Fi
+    interface=$(ip -o -4 route show to default | awk '{print $5}')
+    wifi_name=$(iwgetid -r 2>/dev/null)
+    
+    # Display network information
+    echo "Network Interface: $interface"
+    if [[ -n $wifi_name ]]; then
+        echo "Wi-Fi Network Name (SSID): $wifi_name"
+    else
+        echo "Wi-Fi Network Name: Not connected to Wi-Fi"
+    fi
+}
+
+# Function to list available Wi-Fi SSIDs
+list_wifi_ssids() {
+    echo -e "\nAvailable Wi-Fi Networks:"
+    nmcli -f SSID dev wifi | tail -n +2
+}
+
+# Function to perform a ping sweep
+ping_sweep() {
+    echo "Starting ping sweep on ${network_prefix}.0/24..."
+    for i in $(seq 1 $end_ip); do
+        ip="${network_prefix}.$i"
+        if ping -c 1 -W 1 $ip &> /dev/null; then
+            active_devices[$ip]=""  # Add active IP to the array
+        fi
+    done
+    echo "Ping sweep complete."
+}
+
+# Function to scan ports on an active IP
+scan_ports() {
+    ip=$1
+    open_ports=()  # Array to hold open ports for this IP
+    for port in "${ports[@]}"; do
+        if nc -z -w 1 $ip $port &> /dev/null; then
+            open_ports+=($port)  # Add open port to the array
+        fi
+    done
+    if [ ${#open_ports[@]} -ne 0 ]; then
+        active_devices[$ip]="${open_ports[*]}"  # Store open ports in the associative array
+    fi
+}
+
+# Function to change Wi-Fi network
+change_wifi() {
+    echo -e "\nCurrent Wi-Fi Networks:"
+    list_wifi_ssids  # List available SSIDs before prompting for a new one
+
+    read -p "Enter the new Wi-Fi SSID: " new_ssid
+    nmcli dev wifi connect "$new_ssid"
+    if [[ $? -eq 0 ]]; then
+        echo "Successfully connected to $new_ssid."
+    else
+        echo "Failed to connect to $new_ssid. Please ensure the SSID is correct and try again."
+    fi
+}
+
+# Function to check internet speed
+check_internet_speed() {
+    echo -e "\nChecking Internet Speed..."
+    speedtest-cli
+}
+
+# Function to confirm settings before scan
+confirm_settings() {
+    echo -e "\nPlease confirm your settings:"
+    echo "Network Prefix: $network_prefix"
+    echo "Ending IP Range: $end_ip"
+    echo "Ports to Scan: ${ports[*]}"
+    
+    read -p "Are these settings correct? (y/n): " confirm
+    if [[ ! $confirm =~ ^[Yy]$ ]]; then
+        echo "You can edit the settings."
+        edit_settings
+    fi
+}
+
+# Function to edit settings
+edit_settings() {
+    read -p "Enter the network prefix [default: 192.168.1]: " network_prefix
+    network_prefix=${network_prefix:-192.168.1}
+
+    read -p "Enter the ending IP range (last octet, e.g., 254): " end_ip
+
+    echo "Current ports to scan: ${ports[*]}"
+    read -p "Would you like to add a custom port? (y/n): " add_port
+    if [[ $add_port =~ ^[Yy]$ ]]; then
+        read -p "Enter the custom port to add: " custom_port
+        ports+=($custom_port)
+        echo "Port $custom_port added."
+    fi
+}
+
+# Main function for scanning
+network_scan() {
+    # Display network information
+    display_network_info
+    
+    # Default network prefix
+    network_prefix="192.168.1"
+    end_ip="254"
+
+    edit_settings
+    confirm_settings
+
+    # Perform ping sweep and port scan
+    ping_sweep
+    for ip in "${!active_devices[@]}"; do
+        scan_ports $ip
+    done
+
+    # Display all active devices and their open ports
+    echo -e "\nActive Devices and Open Ports:"
+    for ip in "${!active_devices[@]}"; do
+        if [ -n "${active_devices[$ip]}" ]; then
+            echo "Device: $ip - Open Ports: ${active_devices[$ip]}"
+        else
+            echo "Device: $ip - No open ports"
+        fi
+    done
+}
+
+# Menu function
+menu() {
+    while true; do
+        echo -e "\nSelect an option:"
+        echo "1. Start Network Scan"
+        echo "2. Change Wi-Fi Network (SSID)"
+        echo "3. Check Internet Speed"
+        echo "4. List Available Wi-Fi SSIDs"
+        echo "5. Exit"
+        read -p "Enter your choice: " choice
+
+        case $choice in
+            1)
+                network_scan
+                ;;
+            2)
+                change_wifi
+                ;;
+            3)
+                check_internet_speed
+                ;;
+            4)
+                list_wifi_ssids
+                ;;
+            5)
+                echo "Exiting..."
+                exit 0
+                ;;
+            *)
+                echo "Invalid option. Please try again."
+                ;;
+        esac
+    done
+}
+
+# Run the menu function
+menu
